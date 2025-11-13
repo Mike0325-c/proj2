@@ -9,7 +9,7 @@ import math
 import os
 import time
 
-CSV_PATH = "/home/pi/turtlebot3_ws/src/wall_follower/landmarks.csv"  # ← 改成你的真实路径
+CSV_PATH = "/home/pi/turtlebot3_ws/src/wall_follower/landmarks.csv"  #the path
 MAP_FRAME = "map"
 
 class WaypointNavigator(Node):
@@ -31,7 +31,7 @@ class WaypointNavigator(Node):
             for row in reader:
                 if not row:
                     continue
-                # 你的 landmarks.csv 如果多了 type，就取前两个
+            
                 x = float(row[0])
                 y = float(row[1])
                 points.append((x, y))
@@ -62,7 +62,7 @@ class WaypointNavigator(Node):
         return goal
 
     def go_all(self):
-        # 依次去每个点
+        
         for i, (x, y) in enumerate(self.waypoints):
             self.get_logger().info(f"Going to waypoint {i+1}: ({x:.2f}, {y:.2f})")
             goal_msg = self.make_goal(x, y, 0.0)
