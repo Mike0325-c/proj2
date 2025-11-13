@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+
+# Released under GPLv3: https://www.gnu.org/licenses/gpl-3.0.html
+# Author: Claude Sammut
+# Edited by: Bryson Chen, John Ma, Raunaq Plaha, JiaYang Jiang
+# Last Modified: 2025.11.11
+
+# ROS 2 program to subscribe to TurtleBot3 Pi camera and find coloured landmarks
+# with mask publishing.
+
+# ---------------------------------------------------------------------
+
+import rclpy
+from rclpy.node import Node
+import cv2
+from cv_bridge import CvBridge
+import numpy as np
+import math
+
+from sensor_msgs.msg import CompressedImage, Image
+from geometry_msgs.msg import PointStamped
+
+import wall_follower.landmark
+from wall_follower.landmark import marker_type
+
+# Camera parameters
+field_of_view_h = 62.2
+field_of_view_v = 48.8
+
+# ---------------------------------------------------------------------
+
+colours = {
+    "pink": ((150, 75, 50), (180, 255, 180)),
+    "blue": ((90, 100, 50), (105, 200, 255)),
+    "green": ((40, 60, 30), (90, 255, 255)),
+    "yellow": ((25, 80, 30), (32, 220, 255))
+}
+
+# ---------------------------------------------------------------------
+
+class SeeMarker(Node):
+    def __init__(self):
+        super().__init__('see_marker')
+
+        self.br = CvBridge()
+
+        # Subscribe to camera
+        self.subscription = self.create_subscription(
+            CompressedImage,
+            '/camera/image_raw/compressed',
+            self.listener_callback,
+            10
+        )
+        self.subscription
+
+        # Publishers
+        self.point_publisher = self.create_publisher(PointStamped, '/marker_position', 10)
+        self.mask_publisher = self.create_publisher(Image, '/see_marker/mask', 10)
+
+    # -----------------------------------------------------------------
+
+    def listener_callback(self, data):
+        # Decode ROS image
+        if isinstance(data, CompressedImage):
+            np_arr = np.frombuffer(data.data, np.uint8)
+            current_frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        else:
+            current_frame = self.br.imgmsg_to_cv2(data, desired_encoding='bgr8')
+
+        if current_frame is None:
+            self.get_logger().warn("Failed to convert image")
+            return
+
+        hsv_frame = cv2.cvtColor(current_frame, cv2.COLOR_BGR2HSV)
+
+        # Detect pink blob
+        pink_blob, pink_mask = segment(current_frame, hsv_frame, "pink")
+
+        # Initialize mask for publishing
+        mask_to_publish = pink_mask.copy() if pink_mask is not None else np.zeros(current_frame.shape[:2], dtype=np.uint8)
+
+        if pink_blob:
+            (pink_x, pink_y, pink_h, p_d, p_a) = pink_blob
+
+            for c in ["blue", "green", "yellow"]:
+                blob, mask = segment(current_frame, hsv_frame, c)
+                if mask is not None:
+                    mask_to_publish = cv2.bitwise_or(mask_to_publish, mask)
+
+                if blob:
+                    (c_x, c_y, c_h, c_d, c_a) = blob
+
+                    if abs(pink_x - c_x) > pink_h:
+                        continue
+
+                    marker_at = PointStamped()
+                    marker_at.header.stamp = self.get_clock().now().to_msg()
+                    marker_at.header.frame_id = 'camera_link'
+
+                    if c_y < pink_y:
+                        marker_at.point.z = float(marker_type.index(c + '/pink'))
+                    else:
+                        marker_at.point.z = float(marker_type.index('pink/' + c))
+
+                    x, y = polar_to_cartesian(c_d, c_a)
+                    marker_at.point.x = x / 3
+                    marker_at.point.y = y / 3
+
+                    self.point_publisher.publish(marker_at)
+                    print('Published Point: x=%f, y=%f, z=%f' %
+       (marker_at.point.x, marker_at.point.y, marker_at.point.z))
+
+        # Publish combined mask
+        mask_msg = self.br.cv2_to_imgmsg(mask_to_publish, encoding="mono8")
+        self.mask_publisher.publish(mask_msg)
+
+        # Display images for debugging
+        cv2.imshow("camera", current_frame)
+        cv2.imshow("mask", mask_to_publish)
+        cv2.waitKey(1)
+
+# ---------------------------------------------------------------------
+
+def segment(current_frame, hsv_frame, colour):
+    (lower, upper) = colours[colour]
+
+    # Mask for target colour
+    mask = cv2.inRange(hsv_frame, lower, upper)
+    result = cv2.bitwise_and(current_frame, current_frame, mask=mask)
+
+    # Connected components
+    blobs = cv2.connectedComponentsWithStats(mask, 4, cv2.CV_32S)
+    blob_info = get_stats(blobs, colour)
+
+    # Draw blob label
+    if blob_info:
+        (cx, cy, h, distance, angle) = blob_info
+        text_colors = {
+            "pink": (180, 105, 255),
+            "blue": (255, 0, 0),
+            "green": (0, 255, 0),
+            "yellow": (0, 255, 255)
+        }
+
+        cv2.putText(
+            current_frame,
+            colour,
+            (int(cx) - 30, int(cy) - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            text_colors.get(colour, (255, 255, 255)),
+            2,
+            cv2.LINE_AA
+        )
+        cv2.circle(current_frame, (int(cx), int(cy)), 5, text_colors[colour], -1)
+
+    return blob_info, mask
+
+# ---------------------------------------------------------------------
+
+def get_stats(blobs, colour):
+    (numLabels, labels, stats, centroids) = blobs
+    if numLabels <= 1:
+        return None
+
+    largest = 0
+    rval = None
+    centre = 320  # Image center
+
+    for i in range(1, numLabels):
+        x = stats[i, cv2.CC_STAT_LEFT]
+        y = stats[i, cv2.CC_STAT_TOP]
+        w = stats[i, cv2.CC_STAT_WIDTH]
+        h = stats[i, cv2.CC_STAT_HEIGHT]
+        area = stats[i, cv2.CC_STAT_AREA]
+        (cx, cy) = centroids[i]
+
+        if area < 5:
+            continue
+
+        if area > largest:
+            largest = area
+            distance = 35.772 * pow(h, -0.859)
+
+            aspect_ratio = h / w
+            if aspect_ratio < 0.8:
+                if cx < centre:
+                    cx += h - w
+                else:
+                    cx -= h - w 
+
+            angle = (centre - cx) * field_of_view_h / 640
+            if angle < 0:
+                angle += 360
+            #print('distance to marker is ', distance)
+            rval = (cx, cy, h, distance, angle)
+
+    return rval
+
+# ---------------------------------------------------------------------
+
+def polar_to_cartesian(distance, angle):
+    angle_rad = math.radians(angle)
+    x = distance * math.cos(angle_rad)
+    y = distance * math.sin(angle_rad)
+    return x, y
+
+# ---------------------------------------------------------------------
+
+def main(args=None):
+    rclpy.init(args=args)
+    see_marker = SeeMarker()
+
+    try:
+        rclpy.spin(see_marker)
+    except KeyboardInterrupt:
+        pass
+
+    see_marker.destroy_node()
+    rclpy.shutdown()
+
+# ---------------------------------------------------------------------
+
+if __name__ == '__main__':
+    main()
+ 
