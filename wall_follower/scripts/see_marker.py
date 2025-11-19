@@ -28,12 +28,12 @@ field_of_view_h = 62.2
 field_of_view_v = 48.8
 
 # ---------------------------------------------------------------------
-
+# this works better
 colours = {
-    "pink": ((150, 75, 50), (180, 255, 180)),
-    "blue": ((90, 100, 50), (105, 200, 255)),
-    "green": ((40, 60, 30), (90, 255, 255)),
-    "yellow": ((25, 80, 30), (32, 220, 255))
+    "pink": ((145, 120, 120), (175, 255, 255)),
+    "blue": ((95, 100, 100), (105, 255, 255)),
+    "green": ((55, 60, 75), (87, 255, 255)),
+    "yellow": ((25, 80, 75), (32, 255, 255))
 }
 
 # ---------------------------------------------------------------------
@@ -103,12 +103,12 @@ class SeeMarker(Node):
                         marker_at.point.z = float(marker_type.index('pink/' + c))
 
                     x, y = polar_to_cartesian(c_d, c_a)
-                    marker_at.point.x = x / 3
-                    marker_at.point.y = y / 3
+                    marker_at.point.x = x
+                    marker_at.point.y = y
 
                     self.point_publisher.publish(marker_at)
-                    print('Published Point: x=%f, y=%f, z=%f' %
-       (marker_at.point.x, marker_at.point.y, marker_at.point.z))
+                    #print('Published Point: x=%f, y=%f, z=%f' %
+     #  (marker_at.point.x, marker_at.point.y, marker_at.point.z))
 
         # Publish combined mask
         mask_msg = self.br.cv2_to_imgmsg(mask_to_publish, encoding="mono8")
@@ -175,12 +175,12 @@ def get_stats(blobs, colour):
         area = stats[i, cv2.CC_STAT_AREA]
         (cx, cy) = centroids[i]
 
-        if area < 5:
+        if area < 150:
             continue
 
         if area > largest:
             largest = area
-            distance = 35.772 * pow(h, -0.859)
+            distance = 35.772 * pow(h, -0.859) * 0.5 ######################################################################
 
             aspect_ratio = h / w
             if aspect_ratio < 0.8:
@@ -190,9 +190,12 @@ def get_stats(blobs, colour):
                     cx -= h - w 
 
             angle = (centre - cx) * field_of_view_h / 640
+            angle_offset = -29.33
+            angle += angle_offset
             if angle < 0:
                 angle += 360
-            #print('distance to marker is ', distance)
+            print('distance to marker is ', distance)
+            #print('angle to marker is ', angle)
             rval = (cx, cy, h, distance, angle)
 
     return rval
