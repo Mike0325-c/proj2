@@ -4,55 +4,51 @@
 # Author: Claude Sammut
 # Last Modified: 2024.10.14
 
-# ROS 2 program to subscribe to update a MarkerArray subscribing to 
-# PointStamed topic, assuming it's published by a vision node.
+# ROS 2 program to subscribe to update a MarkerArray subscribing to
+# PointStamped topic, assuming it's published by a vision node.
 
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PointStamped
 import tf2_ros
 import tf2_geometry_msgs
-from visualization_msgs.msg import Marker
-from visualization_msgs.msg import MarkerArray
-import csv
+from visualization_msgs.msg import Marker, MarkerArray
 import math
 
 from wall_follower.landmark import marker_type, max_markers, Landmark
 
 
-
-
-
 class PointTransformer(Node):
 
-	def __init__(self):
-		super().__init__('point_transformer')
-		
-   		# 记录起点位姿（start_x, start_y, heading），用 map->base_footprint 的 TF
-        self.start_heading = None
+    def __init__(self):
+        super().__init__('point_transformer')
+
+        # 记录起点位姿（start_x, start_y, heading），用 map->base_footprint 的 TF
         self.start_x = None
-        
-		self.start_y = None
+        self.start_y = None
+        self.start_heading = None
 
         # 周期性尝试记录起点（刚开始 SLAM 还没收敛可能会失败）
         self.start_pose_timer = self.create_timer(0.5, self.record_start_pose)
 
-		self.tf_buffer = tf2_ros.Buffer()
-		self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-		self.point_subscriber = self.create_subscription(PointStamped, '/marker_position', self.point_callback, 10)
-		self.marker_publisher_ = self.create_publisher(MarkerArray, 'visualization_marker_array', 10)
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        self.point_subscriber = self.create_subscription(
+            PointStamped, '/marker_position', self.point_callback, 10
+        )
+        self.marker_publisher_ = self.create_publisher(
+            MarkerArray, 'visualization_marker_array', 10
+        )
 
-		self.marker_position = []
-		self.marker_array = MarkerArray()			
-		self.marker_array.markers = []
-		
+        self.marker_position = []
+        self.marker_array = MarkerArray()
+        self.marker_array.markers = []
 
-		for i in range(max_markers):
-			self.marker_position.append(Landmark(i, self.marker_array.markers))
-   
-        
-	def record_start_pose(self):
-            """从 TF 中记录起点位姿，只记录一次。"""
+        for i in range(max_markers):
+            self.marker_position.append(Landmark(i, self.marker_array.markers))
+
+    def record_start_pose(self):
+        """从 TF 中记录起点位姿，只记录一次。"""
         if self.start_x is not None:
             # 已经记录过了
             return
@@ -62,9 +58,8 @@ class PointTransformer(Node):
             transform = self.tf_buffer.lookup_transform(
                 'map', 'base_footprint', rclpy.time.Time()
             )
-        except Exception as e:
+        except Exception:
             # SLAM 还没准备好，过一会儿 timer 会再试
-            # self.get_logger().warn(f"Waiting for start pose TF: {e}")
             return
 
         # 平移
@@ -83,11 +78,12 @@ class PointTransformer(Node):
         self.start_heading = yaw
 
         self.get_logger().info(
-            f"Recorded start pose: x={self.start_x:.3f}, y={self.start_y:.3f}, heading={self.start_heading:.3f}"
+            f"Recorded start pose: x={self.start_x:.3f}, "
+            f"y={self.start_y:.3f}, heading={self.start_heading:.3f}"
         )
 
-	    def saveLandmarks(self):
-            """按老师要求的格式保存到 markers.txt。"""
+    def saveLandmarks(self):
+        """按老师要求的格式保存到 markers.txt。"""
         if self.start_x is None:
             self.get_logger().warn(
                 "Start pose not recorded, using (0,0,0) as fallback in markers.txt"
@@ -123,42 +119,39 @@ class PointTransformer(Node):
 
         self.get_logger().info("Markers saved, shutting down.")
 
+    def point_callback(self, msg: PointStamped):
+        try:
+            # Lookup the transform from the camera frame to the map frame
+            transform = self.tf_buffer.lookup_transform(
+                'map', msg.header.frame_id, rclpy.time.Time()
+            )
+        except tf2_ros.LookupException as e:
+            self.get_logger().error(f'Transform lookup failed: {e}')
+            return
 
+        which_marker = int(msg.point.z)
+        m = marker_type[which_marker]
+        msg.point.z = 0.0
 
-	def point_callback(self, msg):
-		try:
-			# Lookup the transform from the camera_rgb_optical_frame to the map frame
-			transform = self.tf_buffer.lookup_transform('map', msg.header.frame_id, rclpy.time.Time())
-		except tf2_ros.LookupException as e:
-			self.get_logger().error('Transform lookup failed: %s' % str(e))
-			return
+        # Transform the point from camera frame to map frame
+        map_point = tf2_geometry_msgs.do_transform_point(msg, transform)
 
-		which_marker = int(msg.point.z)
-		m = marker_type[which_marker]
-		msg.point.z = 0.0
-
-		# Transform the point from camera_rgb_optical_frame to map frame
-		map_point = tf2_geometry_msgs.do_transform_point(msg, transform)
-
-		# Print the transformed point in the map frame
-#		self.get_logger().info(f'Mapped {m} marker to /map frame: x={map_point.point.x}, y={map_point.point.y}, z={map_point.point.z}')
-
-		self.marker_position[which_marker].update_position(map_point.point)
-		self.marker_publisher_.publish(self.marker_array)
+        self.marker_position[which_marker].update_position(map_point.point)
+        self.marker_publisher_.publish(self.marker_array)
 
 
 def main(args=None):
-	rclpy.init(args=args)
-	node = PointTransformer()
+    rclpy.init(args=args)
+    node = PointTransformer()
 
-	try:
-		rclpy.spin(node)
-	except KeyboardInterrupt:
-		node.saveLandmarks()
-		exit()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        node.saveLandmarks()
+        exit()
 
-	rclpy.shutdown()
+    rclpy.shutdown()
+
 
 if __name__ == '__main__':
-	main()
-
+    main()
